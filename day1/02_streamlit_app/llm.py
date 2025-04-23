@@ -85,3 +85,61 @@ def generate_response(pipe, user_question):
         import traceback
         traceback.print_exc()
         return f"エラーが発生しました: {str(e)}", 0
+
+def batch_generate_responses(pipe, questions):
+    """複数の質問に対してバッチで回答を生成する"""
+    if pipe is None:
+        return [(q, "モデルがロードされていないため、回答を生成できません。", 0) for q in questions]
+
+    try:
+        start_time = time.time()
+        responses = []
+        
+        # 各質問を個別に処理
+        for question in questions:
+            try:
+                # 単一の会話形式で処理
+                messages = [
+                    {"role": "user", "content": question},
+                ]
+                output = pipe(messages, max_new_tokens=512, do_sample=True, temperature=0.7, top_p=0.9)
+                
+                assistant_response = ""
+                if output and isinstance(output, list) and len(output) > 0:
+                    if isinstance(output[0].get("generated_text"), list):
+                        # messages形式の場合
+                        last_message = output[0]["generated_text"][-1]
+                        if last_message.get("role") == "assistant":
+                            assistant_response = last_message.get("content", "").strip()
+                    elif isinstance(output[0].get("generated_text"), str):
+                        # 文字列形式の場合
+                        full_text = output[0]["generated_text"]
+                        prompt_end = question
+                        response_start_index = full_text.find(prompt_end) + len(prompt_end)
+                        possible_response = full_text[response_start_index:].strip()
+                        if "<start_of_turn>model" in possible_response:
+                            assistant_response = possible_response.split("<start_of_turn>model\n")[-1].strip()
+                        else:
+                            assistant_response = possible_response
+
+                if not assistant_response:
+                    assistant_response = "回答の抽出に失敗しました。"
+                
+                responses.append((question, assistant_response))
+                
+            except Exception as e:
+                print(f"個別の質問処理中にエラーが発生: {str(e)}")
+                responses.append((question, f"エラーが発生しました: {str(e)}"))
+
+        end_time = time.time()
+        total_time = end_time - start_time
+        print(f"Generated {len(questions)} responses in {total_time:.2f}s") # デバッグ用
+        
+        # 各質問に対して(質問、回答、処理時間)のタプルを返す
+        return [(q, r, total_time/len(questions)) for q, r in responses]
+
+    except Exception as e:
+        st.error(f"バッチ処理中にエラーが発生しました: {e}")
+        import traceback
+        traceback.print_exc()
+        return [(q, f"エラーが発生しました: {str(e)}", 0) for q in questions]

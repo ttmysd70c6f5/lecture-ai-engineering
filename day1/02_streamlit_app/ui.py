@@ -3,13 +3,23 @@ import streamlit as st
 import pandas as pd
 import time
 from database import save_to_db, get_chat_history, get_db_count, clear_db
-from llm import generate_response
+from llm import generate_response, batch_generate_responses
 from data import create_sample_evaluation_data
 from metrics import get_metrics_descriptions
 
 # --- チャットページのUI ---
 def display_chat_page(pipe):
     """チャットページのUIを表示する"""
+    # モード選択（単一質問 or バッチ処理）
+    mode = st.radio("処理モード", ["単一質問", "バッチ処理"], horizontal=True)
+
+    if mode == "単一質問":
+        display_single_question_ui(pipe)
+    else:
+        display_batch_questions_ui(pipe)
+
+def display_single_question_ui(pipe):
+    """単一質問のUIを表示する"""
     st.subheader("質問を入力してください")
     user_question = st.text_area("質問", key="question_input", height=100, value=st.session_state.get("current_question", ""))
     submit_button = st.button("質問を送信")
@@ -56,6 +66,86 @@ def display_chat_page(pipe):
                   st.session_state.feedback_given = False
                   st.rerun() # 画面をクリア
 
+def display_batch_questions_ui(pipe):
+    """バッチ処理用のUIを表示する"""
+    st.subheader("複数の質問を入力してください")
+    # セッション状態の初期化
+    if "batch_questions" not in st.session_state:
+        st.session_state.batch_questions = [""]
+    if "batch_responses" not in st.session_state:
+        st.session_state.batch_responses = []
+
+    # 質問入力フィールドの動的追加
+    for i in range(len(st.session_state.batch_questions)):
+        col1, col2 = st.columns([6, 1])
+        with col1:
+            st.session_state.batch_questions[i] = st.text_area(
+                f"質問 {i+1}",
+                value=st.session_state.batch_questions[i],
+                key=f"batch_q_{i}",
+                height=100
+            )
+        with col2:
+            if i > 0 and st.button("削除", key=f"del_{i}"):
+                st.session_state.batch_questions.pop(i)
+                st.rerun()
+
+    if st.button("質問を追加"):
+        st.session_state.batch_questions.append("")
+        st.rerun()
+
+    submit_batch = st.button("バッチ処理を実行")
+
+    if submit_batch:
+        # 空の質問を除外
+        valid_questions = [q for q in st.session_state.batch_questions if q.strip()]
+        if not valid_questions:
+            st.warning("少なくとも1つの質問を入力してください。")
+            return
+
+        with st.spinner("バッチ処理中..."):
+            st.session_state.batch_responses = batch_generate_responses(pipe, valid_questions)
+
+    # バッチ処理結果の表示
+    if st.session_state.batch_responses:
+        st.subheader("バッチ処理結果")
+        for i, (question, answer, response_time) in enumerate(st.session_state.batch_responses):
+            with st.expander(f"回答 {i+1}"):
+                st.write("**質問:**")
+                st.write(question)
+                st.write("**回答:**")
+                st.write(answer)
+                st.info(f"応答時間: {response_time:.2f}秒")
+
+                # フィードバックフォームの表示
+                with st.form(f"batch_feedback_form_{i}"):
+                    st.subheader("フィードバック")
+                    feedback_options = ["正確", "部分的に正確", "不正確"]
+                    feedback = st.radio(
+                        "回答の評価",
+                        feedback_options,
+                        key=f"batch_feedback_radio_{i}",
+                        label_visibility='collapsed',
+                        horizontal=True
+                    )
+                    correct_answer = st.text_area("より正確な回答（任意）", key=f"batch_correct_answer_{i}")
+                    feedback_comment = st.text_area("コメント（任意）", key=f"batch_feedback_comment_{i}")
+                    
+                    if st.form_submit_button("フィードバックを送信"):
+                        is_correct = 1.0 if feedback == "正確" else (0.5 if feedback == "部分的に正確" else 0.0)
+                        combined_feedback = f"{feedback}"
+                        if feedback_comment:
+                            combined_feedback += f": {feedback_comment}"
+                        
+                        save_to_db(
+                            question,
+                            answer,
+                            combined_feedback,
+                            correct_answer,
+                            is_correct,
+                            response_time
+                        )
+                        st.success("フィードバックが保存されました！")
 
 def display_feedback_form():
     """フィードバック入力フォームを表示する"""
